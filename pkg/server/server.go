@@ -312,7 +312,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.DefaultBool(true),
 			),
 			mcp.WithString("channel_types",
-				mcp.Description("Filter by channel type: 'all' (default), 'dm' (direct messages), 'group_dm' (group DMs), 'partner' (ext-* channels), 'internal' (other channels)."),
+				mcp.Description("Filter by channel type: 'all' (default), 'dm' (direct messages), 'group_dm' (group DMs), 'partner' (ext-* channels), 'internal' (other channels), 'threads' (unread thread replies you're following). Note: 'threads' requires browser session tokens (xoxc/xoxd) and is NOT included in 'all'."),
 				mcp.DefaultString("all"),
 			),
 			mcp.WithNumber("max_channels",

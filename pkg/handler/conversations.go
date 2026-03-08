@@ -633,6 +633,17 @@ type UnreadMessage struct {
 	ChannelType string `json:"channelType"`
 }
 
+// UnreadThread represents a thread subscription with unread replies (summary mode)
+type UnreadThread struct {
+	ChannelID   string `csv:"ChannelID"`
+	ChannelName string `csv:"ChannelName"`
+	ChannelType string `csv:"ChannelType"`
+	ThreadTs    string `csv:"ThreadTs"`
+	UnreadCount int    `csv:"UnreadCount"`
+	LastRead    string `csv:"LastRead"`
+	Latest      string `csv:"Latest"`
+}
+
 // ConversationsUnreadsHandler returns unread messages across all channels
 func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsUnreadsHandler called", zap.Any("params", request.Params))
@@ -662,6 +673,12 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 					"bot tokens (xoxb) do not support unread tracking",
 			)
 		}
+		if params.channelTypes == "threads" {
+			return nil, fmt.Errorf(
+				"channel_types='threads' requires browser session tokens (xoxc/xoxd); " +
+					"OAuth user tokens (xoxp) do not support the search API needed for thread unreads",
+			)
+		}
 		ch.logger.Info("OAuth token detected, using conversations.info fallback for unreads")
 		return ch.getUnreadsViaConversationsInfo(ctx, params)
 	}
@@ -679,7 +696,13 @@ func (ch *ConversationsHandler) processClientCountsResponse(ctx context.Context,
 	ch.logger.Debug("Got counts data",
 		zap.Int("channels", len(counts.Channels)),
 		zap.Int("mpims", len(counts.MPIMs)),
-		zap.Int("ims", len(counts.IMs)))
+		zap.Int("ims", len(counts.IMs)),
+		zap.Bool("threads_has_unreads", counts.Threads.HasUnreads),
+		zap.Int("threads_unread_count", counts.Threads.UnreadCount))
+
+	if params.channelTypes == "threads" {
+		return ch.processActivityUnreads(ctx, params)
+	}
 
 	// Get users map and channels map for resolving names
 	usersMap := ch.apiProvider.ProvideUsersMap()
@@ -904,6 +927,157 @@ func (ch *ConversationsHandler) processClientCountsResponse(ctx context.Context,
 	ch.logger.Debug("Fetched unread messages", zap.Int("total", len(allMessages)))
 
 	return marshalMessagesToCSV(allMessages)
+}
+
+// processActivityUnreads handles channel_types="threads" by calling Slack's
+// activity.feed internal API with mode="priority_unreads_v1". This returns the
+// exact same data as the Activity panel's Unreads tab, giving 0 false positives.
+//
+// Each item has is_unread, channel_id, thread_ts, and unread_msg_count.
+// Item types: thread_v2 (subscribed threads), at_user (@mentions in threads).
+func (ch *ConversationsHandler) processActivityUnreads(ctx context.Context, params *unreadsParams) (*mcp.CallToolResult, error) {
+	feed, err := ch.apiProvider.Slack().ActivityFeed(ctx, 50)
+	if err != nil {
+		ch.logger.Error("ActivityFeed failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to get activity feed: %v", err)
+	}
+
+	ch.logger.Info("ActivityFeed returned", zap.Int("items", len(feed.Items)))
+
+	if len(feed.Items) == 0 {
+		return mcp.NewToolResultText("No unread threads."), nil
+	}
+
+	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+	usersMap := ch.apiProvider.ProvideUsersMap()
+
+	type threadKey struct {
+		channelID string
+		threadTs  string
+	}
+	threadMap := make(map[threadKey]*UnreadThread)
+	var threadOrder []threadKey
+
+	for _, item := range feed.Items {
+		if !item.IsUnread {
+			continue
+		}
+
+		var channelID, threadTs, latestTs string
+		var unreadCount int
+		var itemType string
+
+		switch item.Item.Type {
+		case "thread_v2":
+			if item.Item.BundleInfo == nil {
+				continue
+			}
+			te := item.Item.BundleInfo.Payload.ThreadEntry
+			channelID = te.ChannelID
+			threadTs = te.ThreadTs
+			latestTs = te.LatestTs
+			unreadCount = te.UnreadMsgCount
+			itemType = "thread"
+		case "at_user", "at_user_group", "at_channel", "at_everyone":
+			if item.Item.Message == nil {
+				continue
+			}
+			channelID = item.Item.Message.Channel
+			threadTs = item.Item.Message.ThreadTs
+			latestTs = item.Item.Message.Ts
+			unreadCount = 1
+			itemType = "mention"
+		default:
+			continue
+		}
+
+		if channelID == "" || threadTs == "" {
+			continue
+		}
+
+		key := threadKey{channelID: channelID, threadTs: threadTs}
+		if existing, ok := threadMap[key]; ok {
+			if itemType == "mention" {
+				existing.UnreadCount++
+			}
+			if latestTs > existing.Latest {
+				existing.Latest = latestTs
+			}
+		} else {
+			channelName := channelID
+			if cached, ok := channelsMaps.Channels[channelID]; ok {
+				name := cached.Name
+				if cached.IsIM {
+					if cached.User != "" {
+						if u, ok := usersMap.Users[cached.User]; ok {
+							channelName = "@" + u.Name
+						}
+					}
+				} else if !strings.HasPrefix(name, "#") {
+					channelName = "#" + name
+				} else {
+					channelName = name
+				}
+			}
+
+			threadMap[key] = &UnreadThread{
+				ChannelID:   channelID,
+				ChannelName: channelName,
+				ChannelType: itemType,
+				ThreadTs:    threadTs,
+				UnreadCount: unreadCount,
+				Latest:      latestTs,
+			}
+			threadOrder = append(threadOrder, key)
+		}
+	}
+
+	ch.logger.Info("Activity unreads processed",
+		zap.Int("unique_threads", len(threadOrder)))
+
+	if len(threadOrder) == 0 {
+		return mcp.NewToolResultText("No unread threads."), nil
+	}
+
+	if params.includeMessages {
+		rl := limiter.Tier3.Limiter()
+		var allMessages []Message
+		for _, key := range threadOrder {
+			thread := threadMap[key]
+			if err := rl.Wait(ctx); err != nil {
+				return nil, err
+			}
+			replies, _, _, err := ch.apiProvider.Slack().GetConversationRepliesContext(ctx,
+				&slack.GetConversationRepliesParameters{
+					ChannelID: key.channelID,
+					Timestamp: key.threadTs,
+					Limit:     params.maxMessagesPerChannel,
+				})
+			if err != nil {
+				ch.logger.Warn("Failed to get thread replies",
+					zap.String("channel", key.channelID),
+					zap.String("thread_ts", key.threadTs),
+					zap.Error(err))
+				continue
+			}
+			messages := ch.convertMessagesFromHistory(replies, thread.ChannelName, false)
+			allMessages = append(allMessages, messages...)
+		}
+		if len(allMessages) == 0 {
+			return mcp.NewToolResultText("No unread threads."), nil
+		}
+		return marshalMessagesToCSV(allMessages)
+	}
+
+	threads := make([]UnreadThread, 0, len(threadOrder))
+	for _, key := range threadOrder {
+		threads = append(threads, *threadMap[key])
+	}
+	csvBytes, err := gocsv.MarshalBytes(&threads)
+	if err != nil {
+		return nil, err
+	}
+	return mcp.NewToolResultText(string(csvBytes)), nil
 }
 
 func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Context, params *unreadsParams) (*mcp.CallToolResult, error) {

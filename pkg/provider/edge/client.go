@@ -19,11 +19,25 @@ type clientCountsForm struct {
 	WebClientFields
 }
 
+type ThreadCounts struct {
+	HasUnreads           bool           `json:"has_unreads"`
+	MentionCount         int            `json:"mention_count"`
+	UnreadCount          int            `json:"unread_count"`
+	UnreadCountByChannel map[string]int `json:"unread_count_by_channel,omitempty"`
+}
+
+type ChannelBadges struct {
+	ThreadMentions int `json:"thread_mentions"`
+	ThreadUnreads  int `json:"thread_unreads"`
+}
+
 type ClientCountsResponse struct {
 	baseResponse
-	Channels []ChannelSnapshot `json:"channels,omitempty"`
-	MPIMs    []ChannelSnapshot `json:"mpims,omitempty"`
-	IMs      []ChannelSnapshot `json:"ims,omitempty"`
+	Channels      []ChannelSnapshot `json:"channels,omitempty"`
+	MPIMs         []ChannelSnapshot `json:"mpims,omitempty"`
+	IMs           []ChannelSnapshot `json:"ims,omitempty"`
+	Threads       ThreadCounts      `json:"threads,omitempty"`
+	ChannelBadges ChannelBadges     `json:"channel_badges,omitempty"`
 }
 
 type ChannelSnapshot struct {
@@ -159,3 +173,83 @@ func (cl *Client) ClientDMs(ctx context.Context) ([]ClientDM, error) {
 	}
 	return IMs, nil
 }
+
+// activity.feed API
+
+type activityFeedForm struct {
+	BaseRequest
+	Limit               int    `json:"limit"`
+	Types               string `json:"types"`
+	Mode                string `json:"mode"`
+	ArchiveOnly         bool   `json:"archive_only"`
+	UnreadOnly          bool   `json:"unread_only"`
+	PriorityOnly        bool   `json:"priority_only"`
+	OnlySalesforceChans bool   `json:"only_salesforce_channels"`
+	IsActivityInbox     bool   `json:"is_activity_inbox"`
+	WebClientFields
+}
+
+type ActivityFeedResponse struct {
+	baseResponse
+	Items []ActivityFeedItem `json:"items,omitempty"`
+}
+
+type ActivityFeedItem struct {
+	IsUnread bool              `json:"is_unread"`
+	FeedTs   string            `json:"feed_ts"`
+	Key      string            `json:"key"`
+	Item     ActivityItemInner `json:"item"`
+}
+
+type ActivityItemInner struct {
+	Type       string              `json:"type"`
+	BundleInfo *ActivityBundleInfo `json:"bundle_info,omitempty"`
+	Message    *ActivityMessage    `json:"message,omitempty"`
+}
+
+type ActivityBundleInfo struct {
+	Payload struct {
+		ThreadEntry struct {
+			ChannelID      string `json:"channel_id"`
+			ThreadTs       string `json:"thread_ts"`
+			LatestTs       string `json:"latest_ts"`
+			UnreadMsgCount int    `json:"unread_msg_count"`
+			MinUnreadTs    string `json:"min_unread_ts"`
+		} `json:"thread_entry"`
+	} `json:"payload"`
+}
+
+type ActivityMessage struct {
+	Ts           string `json:"ts"`
+	Channel      string `json:"channel"`
+	ThreadTs     string `json:"thread_ts"`
+	AuthorUserID string `json:"author_user_id"`
+	IsBroadcast  bool   `json:"is_broadcast"`
+}
+
+func (cl *Client) ActivityFeed(ctx context.Context, limit int) (ActivityFeedResponse, error) {
+	ctx, task := trace.NewTask(ctx, "ActivityFeed")
+	defer task.End()
+
+	form := activityFeedForm{
+		BaseRequest: BaseRequest{Token: cl.token},
+		Limit:       limit,
+		Types:       "thread_v2,at_user,at_user_group,at_channel,at_everyone",
+		Mode:        "priority_unreads_v1",
+		WebClientFields: webclientReason("fetchActivityFeed"),
+	}
+
+	resp, err := cl.PostForm(ctx, "activity.feed", values(form, true))
+	if err != nil {
+		return ActivityFeedResponse{}, err
+	}
+	r := ActivityFeedResponse{}
+	if err := cl.ParseResponse(&r, resp); err != nil {
+		return ActivityFeedResponse{}, err
+	}
+	if err := r.validate("activity.feed"); err != nil {
+		return ActivityFeedResponse{}, err
+	}
+	return r, nil
+}
+
