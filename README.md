@@ -236,6 +236,26 @@ Clear all completed saved items from the "Save for Later" panel. This is a bulk 
 
 - **Parameters:** None.
 
+### 19. activity_unreads
+Get unread Activity items — thread replies you're following and @mentions in threads. Returns the same data as Slack's Activity panel "Unreads" tab.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `include_messages` (boolean, default `true`): If true, fetches unread reply messages per thread. If false, returns a summary CSV only.
+  - `max_messages_per_thread` (number, default `10`): Max messages to fetch per thread when `include_messages` is true.
+  - `limit` (number, default `30`): Max Activity items to return.
+
+### 20. activity_mark_read
+Mark an Activity item as read. Use the `key`, `feed_ts`, and `type` values from `activity_unreads` output.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `key` (string, required): Activity item key from `activity_unreads` output (e.g., `thread_v2-C092WJP9Z38-1772545632.256259`).
+  - `feed_ts` (string, required): Feed timestamp from `activity_unreads` output.
+  - `type` (string, required): Item type: `thread_v2`, `at_user`, `at_user_group`, `at_channel`, `at_everyone`.
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
