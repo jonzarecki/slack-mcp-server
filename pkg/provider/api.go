@@ -211,7 +211,12 @@ type SlackAPI interface {
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
 	UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error)
 	ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error)
+	ActivityFeed(ctx context.Context, limit int) (edge.ActivityFeedResponse, error)
+	ActivityMarkRead(ctx context.Context, itemType, feedTs, key string) error
 	GetMutedChannels(ctx context.Context) (map[string]bool, error)
+	SavedList(ctx context.Context, filter string, limit int, cursor string) (edge.SavedListResponse, error)
+	SavedUpdate(ctx context.Context, itemType, itemID, ts, mark string, dateDue int64) error
+	SavedClearCompleted(ctx context.Context) error
 
 	// User groups API methods
 	GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error)
@@ -505,8 +510,28 @@ func (c *MCPSlackClient) ClientCounts(ctx context.Context) (edge.ClientCountsRes
 	return c.edgeClient.ClientCounts(ctx)
 }
 
+func (c *MCPSlackClient) ActivityFeed(ctx context.Context, limit int) (edge.ActivityFeedResponse, error) {
+	return c.edgeClient.ActivityFeed(ctx, limit)
+}
+
+func (c *MCPSlackClient) ActivityMarkRead(ctx context.Context, itemType, feedTs, key string) error {
+	return c.edgeClient.ActivityMarkRead(ctx, itemType, feedTs, key)
+}
+
 func (c *MCPSlackClient) GetMutedChannels(ctx context.Context) (map[string]bool, error) {
 	return c.edgeClient.GetMutedChannels(ctx)
+}
+
+func (c *MCPSlackClient) SavedList(ctx context.Context, filter string, limit int, cursor string) (edge.SavedListResponse, error) {
+	return c.edgeClient.SavedList(ctx, filter, limit, cursor)
+}
+
+func (c *MCPSlackClient) SavedUpdate(ctx context.Context, itemType, itemID, ts, mark string, dateDue int64) error {
+	return c.edgeClient.SavedUpdate(ctx, itemType, itemID, ts, mark, dateDue)
+}
+
+func (c *MCPSlackClient) SavedClearCompleted(ctx context.Context) error {
+	return c.edgeClient.SavedClearCompleted(ctx)
 }
 
 func (c *MCPSlackClient) GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error) {

@@ -173,6 +173,32 @@ func TimestampToIsoRFC3339(slackTS string) (string, error) {
 	return t.UTC().Format(time.RFC3339), nil
 }
 
+var userMentionRegex = regexp.MustCompile(`<@([UW][A-Z0-9]+)(?:\|[^>]+)?>`)
+
+func ResolveUserMentions(s string, users map[string]slack.User) string {
+	return userMentionRegex.ReplaceAllStringFunc(s, func(match string) string {
+		parts := userMentionRegex.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+		userID := parts[1]
+		if u, ok := users[userID]; ok {
+			name := u.RealName
+			if name == "" {
+				name = u.Name
+			}
+			return "@" + name
+		}
+		return match
+	})
+}
+
+func ProcessTextWithUsers(s string, users map[string]slack.User) string {
+	s = ResolveUserMentions(s, users)
+	s = filterSpecialChars(s)
+	return s
+}
+
 func ProcessText(s string) string {
 	s = filterSpecialChars(s)
 
